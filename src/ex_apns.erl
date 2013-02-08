@@ -196,7 +196,7 @@ read_error(Socket) ->
   case ssl:recv(Socket, 6, ?ERROR_WAIT_TIMEOUT) of
     {ok, <<8, Status, Identifier:32>>} when Status =/= 0 ->
       {Identifier, status_to_reason(Status)};
-    {ok, <<>>} ->
+    {error, timeout} ->
       ok;
     _ -> undefined end.
 
