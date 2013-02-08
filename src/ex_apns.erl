@@ -42,6 +42,8 @@
 
 -record(state, {env, certfile, socket, next = 0}).
 
+-define(ERROR_WAIT_TIMEOUT, 100).
+
 %% @equiv application:start(ex_apns)
 start() ->
   ssl:start(),
@@ -191,7 +193,7 @@ send(Packet, State = #state{socket = Socket}) ->
 
 
 read_error(Socket) ->
-  case ssl:recv(Socket, 0) of
+  case ssl:recv(Socket, 6, ?ERROR_WAIT_TIMEOUT) of
     {ok, <<8, Status, Identifier:32>>} when Status =/= 0 ->
       {Identifier, status_to_reason(Status)};
     {ok, <<>>} ->
