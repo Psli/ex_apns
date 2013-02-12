@@ -1,3 +1,4 @@
+%% -*- mode: erlang; erlang-indent-level: 2 -*-
 %% Copyright (c) 2012, Anthony Ramine <n.oxyde@gmail.com>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
@@ -102,7 +103,7 @@ token_to_binary(List) when is_list(List) ->
 
 %% @hidden
 init({Env, CertFile}) ->
-  case connect(env_to_gateway(Env), 2195, CertFile) of
+  case connect(env_to_gateway(Env), 2195, CertFile, []) of
     {ok, Socket} ->
       {ok, #state{env = Env, certfile = CertFile, socket = Socket}};
     {error, Reason} -> {stop, Reason} end.
@@ -133,7 +134,22 @@ handle_cast(_Msg, State) ->
   {noreply, State}.
 
 %% @hidden
+handle_info({ssl, _Socket, <<8, Status, Identifier:32>>}, State)
+  when Status =/= 0 ->
+  Reason = status_to_reason(Status),
+  Format = "~w[~w]: received error response for notification id ~B (~w)~n",
+  error_logger:error_msg(Format, [?MODULE, name(), Identifier, Reason]),
+  {noreply, State};
+handle_info({ssl_closed, Socket}, State = #state{socket = Socket}) ->
+  Format = "~w[~w]: socket closed~n",
+  error_logger:error_msg(Format, [?MODULE, name()]),
+  case connect(State) of
+    {ok, NewSocket} -> {noreply, State#state{socket = NewSocket}};
+    {error, Reason} -> {stop, Reason, State}
+  end;
 handle_info(_Msg, State) ->
+  %% error_logger:error_msg("received unexpected message ~p, state ~w~n",
+  %%                        [_Msg, State]),
   {noreply, State}.
 
 %% @hidden
@@ -149,17 +165,19 @@ code_change(_OldVsn, State, _Extra) ->
 %%       where address() = string() | atom() | inet:ip_address()
 %%             result() = {ok, ssl:socket()} | {error, inet:posix()}
 connect(Address, Port, CertFile) ->
+    connect(Address, Port, CertFile, [{active, false}]).
+
+connect(Address, Port, CertFile, Opts) ->
   CaCertFile = filename:join([code:priv_dir(?MODULE), "entrust_2048_ca.cer"]),
   SslOptions = [binary,
-                {active, false},
                 {certfile, CertFile},
-                {cacertfile, CaCertFile}],
+                {cacertfile, CaCertFile} | Opts],
   ssl:connect(Address, Port, SslOptions).
 
 %% @spec connect(State::#state{}) -> {ok, #state{}} | {stop, reason()}
 %%       where reason() = closed | inet:posix()
 connect(#state{env = Env, certfile = CertFile}) ->
-  connect(env_to_gateway(Env), 2195, CertFile).
+  connect(env_to_gateway(Env), 2195, CertFile, []).
 
 %% @spec send(iodata(), #state{}) -> {noreply, #state{}} | {stop, reason()}
 %%       where reason() = closed | inet:posix()
@@ -167,14 +185,6 @@ send(Packet, State = #state{socket = Socket}) ->
   case ssl:send(Socket, Packet) of
     ok -> {noreply, State};
     {error, closed} ->
-      case read_error(Socket) of
-        undefined ->
-          Format = "~w[~w]: could not send last notification~n",
-          error_logger:error_msg(Format, [?MODULE, name()]);
-        {Identifier, Status} ->
-          Format = "~w[~w]: could not send extended notification ~B (~w)~n",
-          error_logger:error_msg(Format,
-                                 [?MODULE, name(), Identifier, Status]) end,
       case connect(State) of
         {ok, NewSocket} ->
           case ssl:send(NewSocket, Packet) of
@@ -182,12 +192,6 @@ send(Packet, State = #state{socket = Socket}) ->
             {error, Reason} -> {stop, Reason} end;
         {error, Reason} -> {stop, Reason} end;
     {error, Reason} -> {stop, Reason} end.
-
-read_error(Socket) ->
-  case ssl:recv(Socket, 6) of
-    {ok, <<8, Status, Identifier:32>>} when Status =/= 0 ->
-      {Identifier, status_to_reason(Status)};
-    _ -> undefined end.
 
 %% @spec name() -> atom()
 name() ->
